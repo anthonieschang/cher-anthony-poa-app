@@ -1,0 +1,62 @@
+import React, { useState, useEffect } from 'react';
+import { getChibiAssets, ChibiAssets } from '../services/assetService';
+
+interface ChibiProps {
+  type: 'male' | 'female';
+  expression: 'happy' | 'worried' | 'neutral';
+  accessories?: string[];
+  className?: string;
+}
+
+export const Chibi: React.FC<ChibiProps> = ({ type, expression, accessories = [], className = "" }) => {
+  const [assets, setAssets] = useState<ChibiAssets | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getChibiAssets().then(data => {
+      setAssets(data);
+      setLoading(false);
+    });
+  }, []);
+
+  if (loading) {
+    return (
+      <div className={`flex items-center justify-center bg-transparent rounded-full animate-pulse ${className}`}>
+        <div className="text-amber-400 text-xs font-bold">Loading...</div>
+      </div>
+    );
+  }
+
+  // Map 'neutral' to 'happy' for the generated assets if neutral isn't specifically generated
+  const assetKey = `${type}_${expression === 'neutral' ? 'happy' : expression}` as keyof ChibiAssets;
+  const imageUrl = assets?.[assetKey];
+
+  return (
+    <div className={`relative !bg-transparent overflow-hidden border-0 ${className}`} style={{ backgroundColor: 'transparent', borderWidth: 0 }}>
+      {imageUrl ? (
+        <img 
+          src={imageUrl.startsWith('data:') ? imageUrl : `${imageUrl}&v=10`} 
+          alt={`${type} ${expression}`} 
+          className="w-full h-full object-contain !bg-transparent border-0"
+          referrerPolicy="no-referrer"
+          style={{ backgroundColor: 'transparent', borderWidth: 0 }}
+        />
+      ) : (
+        <div className="w-full h-full bg-amber-200 rounded-full flex flex-col items-center justify-center border-2 border-amber-400">
+          <span className="text-4xl">{type === 'male' ? '👦' : '👧'}</span>
+          <span className="text-[10px] font-bold text-amber-700 mt-1 uppercase">{expression}</span>
+        </div>
+      )}
+
+      {/* Accessories Overlay - Positioned roughly for anime chibi proportions */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        {accessories.includes('hoodie') && (
+          <div className="absolute bottom-[10%] text-5xl">🧥</div>
+        )}
+        {accessories.includes('blazer') && (
+          <div className="absolute bottom-[10%] text-5xl">👔</div>
+        )}
+      </div>
+    </div>
+  );
+};

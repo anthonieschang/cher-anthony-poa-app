@@ -1,0 +1,137 @@
+import { GoogleGenAI } from "@google/genai";
+
+const DB_NAME = 'poa_assets_db';
+const STORE_NAME = 'chibi_assets';
+const ASSET_VERSION = 'v5';
+
+export interface ChibiAssets {
+  male_happy: string;
+  male_worried: string;
+  female_happy: string;
+  female_worried: string;
+}
+
+// Simple IndexedDB wrapper for storing large assets
+async function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(STORE_NAME);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getFromDB(key: string): Promise<any> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(key);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
+async function saveToDB(key: string, value: any): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.put(value, key);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+let sessionQuotaExceeded = false;
+
+function getFallbackAvatar(id: string): string {
+  const isFemale = id.includes('female');
+  const isHappy = id.includes('happy');
+  const seed = isFemale ? (isHappy ? 'Lily' : 'Mia') : (isHappy ? 'Leo' : 'Jack');
+  return `https://api.dicebear.com/7.x/adventurer/svg?seed=${seed}&backgroundColor=transparent&v=10`;
+}
+
+export async function getChibiAssets(): Promise<ChibiAssets> {
+  const cached = await getFromDB(ASSET_VERSION);
+  if (cached) {
+    return cached;
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const model = "gemini-2.5-flash-image";
+
+  const prompts = [
+    { id: "male_happy", prompt: "High-quality kawaii 2D Chibi student character illustration of a Singaporean male secondary school student. Large expressive eyes, thick clean lines. Jet black trendy hair, fair skin, broad happy smile. Wearing a clean white Singapore school uniform shirt. Isolated on transparent background, no background, professional digital art, full body, high resolution." },
+    { id: "male_worried", prompt: "High-quality kawaii 2D Chibi student character illustration of a Singaporean male secondary school student. Large expressive eyes, thick clean lines. Jet black trendy hair, fair skin, worried and teary expression. Wearing a clean white Singapore school uniform shirt. Isolated on transparent background, no background, professional digital art, full body, high resolution." },
+    { id: "female_happy", prompt: "High-quality kawaii 2D Chibi student character illustration of a Singaporean female secondary school student. Large expressive eyes, thick clean lines. Jet black hair with a small pink hair pin, fair skin, broad happy smile. Wearing a clean white Singapore school uniform blouse. Isolated on transparent background, no background, professional digital art, full body, high resolution." },
+    { id: "female_worried", prompt: "High-quality kawaii 2D Chibi student character illustration of a Singaporean female secondary school student. Large expressive eyes, thick clean lines. Jet black hair with a small pink hair pin, fair skin, worried and teary expression. Wearing a clean white Singapore school uniform blouse. Isolated on transparent background, no background, professional digital art, full body, high resolution." }
+  ];
+
+  const results: any = {};
+
+  for (const p of prompts) {
+    if (sessionQuotaExceeded) {
+      results[p.id] = getFallbackAvatar(p.id);
+      continue;
+    }
+
+    let attempts = 0;
+    const maxAttempts = 2;
+    
+    while (attempts < maxAttempts) {
+      try {
+        if (Object.keys(results).length > 0 || attempts > 0) {
+          await delay(2000 * (attempts + 1));
+        }
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: { parts: [{ text: p.prompt }] },
+        });
+
+        if (response.candidates && response.candidates[0]?.content?.parts) {
+          for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) {
+              results[p.id] = `data:image/png;base64,${part.inlineData.data}`;
+              break;
+            }
+          }
+        }
+        
+        if (results[p.id]) break;
+      } catch (error: any) {
+        if (error?.message?.includes('429') || error?.status === 'RESOURCE_EXHAUSTED') {
+          console.warn(`Quota exceeded. Falling back to default avatars.`);
+          sessionQuotaExceeded = true;
+          break;
+        }
+        console.error(`Error generating ${p.id} (Attempt ${attempts + 1}):`, error);
+        break;
+      }
+      attempts++;
+    }
+    
+    if (!results[p.id]) {
+      results[p.id] = getFallbackAvatar(p.id);
+    }
+  }
+
+  try {
+    if (Object.values(results).some(v => v !== "")) {
+      await saveToDB(ASSET_VERSION, results);
+    }
+  } catch (e) {
+    console.error("Failed to save assets to IndexedDB:", e);
+  }
+  
+  return results;
+}
